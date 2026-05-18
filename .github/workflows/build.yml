@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13  # Intel mac, supports 10.13+ deployment target
+    runs-on: macos-latest  # Apple Silicon, fast provisioning — cross-compiles to x86_64
     steps:
       - uses: actions/checkout@v4
 
