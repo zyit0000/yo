@@ -188,6 +188,47 @@ static bool resolve_offsets() {
 }
 
 // ============================================================================
+// Deferred lua_State acquisition — only called on demand
+// ============================================================================
+static bool try_acquire_state() {
+    if (g_eL) return true;
+
+    if (!g_base && !resolve_offsets()) {
+        printf("[-] Failed to resolve offsets\n");
+        return false;
+    }
+
+    if (offsets::GetGlobalState == 0) {
+        printf("[-] GetGlobalState offset is 0\n");
+        return false;
+    }
+
+    typedef lua_State* (*fn_GetGlobalState)();
+    auto getGlobalState = reinterpret_cast<fn_GetGlobalState>(g_slide + offsets::GetGlobalState);
+    printf("[*] Calling GetGlobalState at %p...\n", (void*)getGlobalState);
+
+    g_rL = getGlobalState();
+    if (!g_rL) {
+        printf("[-] GetGlobalState returned null\n");
+        return false;
+    }
+    printf("[+] Got lua_State: %p\n", (void*)g_rL);
+
+    typedef lua_State* (*fn_lua_newthread)(lua_State*);
+    auto r_newthread = reinterpret_cast<fn_lua_newthread>(g_slide + offsets::lua_newthread);
+    if (r_newthread) {
+        g_eL = r_newthread(g_rL);
+        printf("[+] Executor thread: %p\n", (void*)g_eL);
+    } else {
+        g_eL = g_rL;
+    }
+
+    register_all_unc(g_eL);
+    printf("[+] Environment ready\n");
+    return true;
+}
+
+// ============================================================================
 // TCP server on 127.0.0.1:5555
 // ============================================================================
 #define SERVER_PORT 5555
@@ -216,7 +257,6 @@ static void tcp_server() {
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
         if (client_fd < 0) continue;
 
-        // read entire script from client
         std::string script;
         char buf[4096];
         ssize_t n;
@@ -225,69 +265,54 @@ static void tcp_server() {
             script += buf;
         }
         close(client_fd);
+        if (script.empty()) continue;
 
-        if (!script.empty() && g_eL && r_luavm_load) {
-            printf("[*] Executing script (%zu bytes)\n", script.size());
-            int r = r_luavm_load(g_eL, "@wadiwad", script.c_str(), script.size(), 0);
-            if (r == 0 && r_call) {
-                r_call(g_eL, 0, 0);
-                printf("[+] Script executed OK\n");
-            } else {
-                const char* err = r_tostring(g_eL, -1);
-                printf("[-] Script error: %s\n", err ? err : "unknown");
-                r_pop(g_eL, 1);
+        // strip trailing newline
+        while (!script.empty() && script.back() == '\n') script.pop_back();
+
+        // special commands
+        if (script == "attach") {
+            printf("[*] Attach command received\n");
+            try_acquire_state();
+            continue;
+        }
+        if (script == "status") {
+            printf("[*] base=0x%lx slide=0x%lx rL=%p eL=%p\n",
+                   (unsigned long)g_base, (unsigned long)g_slide,
+                   (void*)g_rL, (void*)g_eL);
+            continue;
+        }
+
+        // auto-attach on first script
+        if (!g_eL) {
+            printf("[*] Auto-attaching...\n");
+            if (!try_acquire_state()) {
+                printf("[-] Not attached, can't execute\n");
+                continue;
             }
+        }
+
+        printf("[*] Executing (%zu bytes)\n", script.size());
+        int r = r_luavm_load(g_eL, "@wadiwad", script.c_str(), script.size(), 0);
+        if (r == 0 && r_call) {
+            r_call(g_eL, 0, 0);
+            printf("[+] OK\n");
+        } else {
+            const char* err = r_tostring(g_eL, -1);
+            printf("[-] Error: %s\n", err ? err : "unknown");
+            r_pop(g_eL, 1);
         }
     }
 }
 
 // ============================================================================
-// Constructor — runs when dylib is loaded
+// Constructor — minimal, just starts TCP server
 // ============================================================================
 __attribute__((constructor))
 static void dylib_entry() {
-    printf("[*] wadiwad dylib loaded (macOS)\n");
-
-    if (!resolve_offsets()) {
-        printf("[-] Failed to resolve offsets, aborting\n");
-        return;
-    }
-
-    // lua_State acquisition — walk TaskScheduler from GetGlobalState
-    // This runs in a separate thread to wait for the game to initialize
-    std::thread([]() {
-        // give the game time to start up
-        sleep(5);
-
-        // attempt to get global state via offset
-        if (offsets::GetGlobalState != 0) {
-            typedef lua_State* (*fn_GetGlobalState)();
-            auto getGlobalState = reinterpret_cast<fn_GetGlobalState>(g_slide + offsets::GetGlobalState);
-            g_rL = getGlobalState();
-            if (g_rL) {
-                printf("[+] Got lua_State: %p\n", (void*)g_rL);
-                // create executor thread
-                typedef lua_State* (*fn_lua_newthread)(lua_State*);
-                auto r_newthread = reinterpret_cast<fn_lua_newthread>(g_slide + offsets::lua_newthread);
-                if (r_newthread) {
-                    g_eL = r_newthread(g_rL);
-                    printf("[+] Executor thread: %p\n", (void*)g_eL);
-                } else {
-                    g_eL = g_rL;
-                }
-            } else {
-                printf("[-] GetGlobalState returned null\n");
-            }
-        }
-
-        if (g_eL) {
-            register_all_unc(g_eL);
-            printf("[+] Environment ready — send scripts to 127.0.0.1:%d\n", SERVER_PORT);
-        } else {
-            printf("[!] No lua_State — server will still listen but can't execute\n");
-        }
-
-        // start TCP server on this thread
-        tcp_server();
-    }).detach();
+    printf("[*] wadiwad dylib loaded\n");
+    // DON'T resolve offsets or touch game memory here — causes segfault
+    // Everything deferred to 'attach' command or auto-attach on first script
+    std::thread(tcp_server).detach();
 }
+
