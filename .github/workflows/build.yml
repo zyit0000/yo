@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: macos-latest  # Apple Silicon, fast provisioning — cross-compiles to x86_64
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
