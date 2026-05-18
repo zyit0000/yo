@@ -152,7 +152,7 @@ static bool get_image_info(uintptr_t* out_base, intptr_t* out_slide) {
 // ============================================================================
 // Resolve offsets — offset is already rebased (- 0x100000000), add slide
 // ============================================================================
-#define RESOLVE(ptr, type, off) ptr = reinterpret_cast<type>(g_slide + offsets::off)
+#define RESOLVE(ptr, type, off) ptr = reinterpret_cast<type>(g_base + offsets::off)
 
 static bool resolve_offsets() {
     if (!get_image_info(&g_base, &g_slide)) {
@@ -204,7 +204,7 @@ static bool try_acquire_state() {
     }
 
     typedef lua_State* (*fn_GetGlobalState)();
-    auto getGlobalState = reinterpret_cast<fn_GetGlobalState>(g_slide + offsets::GetGlobalState);
+    auto getGlobalState = reinterpret_cast<fn_GetGlobalState>(g_base + offsets::GetGlobalState);
     printf("[*] Calling GetGlobalState at %p...\n", (void*)getGlobalState);
 
     g_rL = getGlobalState();
@@ -215,7 +215,7 @@ static bool try_acquire_state() {
     printf("[+] Got lua_State: %p\n", (void*)g_rL);
 
     typedef lua_State* (*fn_lua_newthread)(lua_State*);
-    auto r_newthread = reinterpret_cast<fn_lua_newthread>(g_slide + offsets::lua_newthread);
+    auto r_newthread = reinterpret_cast<fn_lua_newthread>(g_base + offsets::lua_newthread);
     if (r_newthread) {
         g_eL = r_newthread(g_rL);
         printf("[+] Executor thread: %p\n", (void*)g_eL);
