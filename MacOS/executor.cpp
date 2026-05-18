@@ -214,16 +214,19 @@ static bool try_acquire_state() {
     }
     printf("[+] Got lua_State: %p\n", (void*)g_rL);
 
-    typedef lua_State* (*fn_lua_newthread)(lua_State*);
-    auto r_newthread = reinterpret_cast<fn_lua_newthread>(g_base + offsets::lua_newthread);
-    if (r_newthread) {
-        g_eL = r_newthread(g_rL);
-        printf("[+] Executor thread: %p\n", (void*)g_eL);
+    // use the returned state directly — lua_newthread may crash
+    // if GetGlobalState doesn't return a raw lua_State*
+    g_eL = g_rL;
+    printf("[+] Using state directly (skipping lua_newthread for safety)\n");
+
+    // only register UNC if we have setfield + pushcclosure
+    if (r_setfield && r_pushcclosure) {
+        register_all_unc(g_eL);
+        printf("[+] UNC environment registered\n");
     } else {
-        g_eL = g_rL;
+        printf("[!] Missing setfield/pushcclosure — UNC not registered\n");
     }
 
-    register_all_unc(g_eL);
     printf("[+] Environment ready\n");
     return true;
 }
