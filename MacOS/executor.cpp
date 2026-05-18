@@ -8,7 +8,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
-#include <thread>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
@@ -306,13 +306,20 @@ static void tcp_server() {
 }
 
 // ============================================================================
-// Constructor — minimal, just starts TCP server
+// Constructor — minimal, just starts TCP server via pthread (safe in dyld context)
 // ============================================================================
-__attribute__((constructor))
-static void dylib_entry() {
-    printf("[*] wadiwad dylib loaded\n");
-    // DON'T resolve offsets or touch game memory here — causes segfault
-    // Everything deferred to 'attach' command or auto-attach on first script
-    std::thread(tcp_server).detach();
+static void* server_thread_entry(void*) {
+    tcp_server();
+    return nullptr;
 }
 
+__attribute__((constructor))
+static void dylib_entry() {
+    const char msg[] = "[*] wadiwad dylib loaded\n";
+    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    // DON'T resolve offsets or touch game memory here — causes segfault
+    // Everything deferred to 'attach' command or auto-attach on first script
+    pthread_t tid;
+    pthread_create(&tid, nullptr, server_thread_entry, nullptr);
+    pthread_detach(tid);
+}
