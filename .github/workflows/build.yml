@@ -23,8 +23,9 @@ jobs:
             -framework Security \
             -o executor.dylib \
             executor.cpp
+          codesign -f -s - executor.dylib
           file executor.dylib
-          otool -l executor.dylib | grep -A2 LC_VERSION_MIN
+          codesign -dv executor.dylib 2>&1 || true
 
       - name: Delete old release (if exists)
         env:

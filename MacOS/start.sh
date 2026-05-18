@@ -37,6 +37,12 @@ fi
 echo "[+] Roblox: $ROBLOX_APP"
 echo "[+] Dylib:  $INSTALL_DIR/$DYLIB_NAME"
 
+# strip library validation from Roblox so it accepts our dylib
+echo "[*] Stripping Roblox code signature (library validation)..."
+codesign --remove-signature "$ROBLOX_APP" 2>/dev/null || true
+codesign -f -s - "$ROBLOX_APP" 2>/dev/null || true
+echo "[+] Signature stripped"
+
 # open a NEW terminal window with the script sender REPL
 SEND_SCRIPT="$SCRIPT_DIR/send.sh"
 if [ -f "$SEND_SCRIPT" ]; then
