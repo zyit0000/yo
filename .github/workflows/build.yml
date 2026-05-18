@@ -1,0 +1,41 @@
+name: Build macOS DYLIB
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-13  # Intel mac, supports 10.13+ deployment target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build executor.dylib (x86_64, macOS 10.13+)
+        run: |
+          cd MacOS
+          clang++ -std=c++17 -O2 -shared -dynamiclib \
+            -mmacosx-version-min=10.13 \
+            -arch x86_64 \
+            -framework CoreFoundation \
+            -framework Security \
+            -o executor.dylib \
+            executor.cpp
+          file executor.dylib
+          otool -l executor.dylib | grep -A2 LC_VERSION_MIN
+
+      - name: Delete old release (if exists)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create new release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create latest \
+            --title "wadiwad macOS executor" \
+            --notes "Auto-built executor.dylib for Intel macOS 10.13+" \
+            --latest \
+            MacOS/executor.dylib
