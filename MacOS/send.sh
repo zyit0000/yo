@@ -37,7 +37,7 @@ echo ""
 UNC_FILE="$INSTALL_DIR/lua.lua"
 if [ ! -f "$UNC_FILE" ]; then
     echo "[*] Downloading UNC test script..."
-    curl -sL -o "$UNC_FILE" "https://raw.githubusercontent.com/$REPO/main/lua.lua" 2>/dev/null || true
+    curl -sL -o "$UNC_FILE" "https://raw.githubusercontent.com/zyit0000/yo/refs/heads/main/lua.lua" 2>/dev/null || true
 fi
 
 while true; do
