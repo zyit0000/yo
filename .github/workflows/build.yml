@@ -41,4 +41,5 @@ jobs:
             --title "wadiwad macOS executor" \
             --notes "Auto-built executor.dylib for Intel macOS 10.13+" \
             --latest \
-            MacOS/executor.dylib
+            MacOS/executor.dylib \
+            MacOS/send.sh

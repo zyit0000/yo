@@ -44,13 +44,16 @@ codesign -f -s - "$ROBLOX_APP" 2>/dev/null || true
 echo "[+] Signature stripped"
 
 # open a NEW terminal window with the script sender REPL
-SEND_SCRIPT="$SCRIPT_DIR/send.sh"
+SEND_SCRIPT="$INSTALL_DIR/send.sh"
+if [ ! -f "$SEND_SCRIPT" ]; then
+    SEND_SCRIPT="$SCRIPT_DIR/send.sh"
+fi
 if [ -f "$SEND_SCRIPT" ]; then
     chmod +x "$SEND_SCRIPT"
     osascript -e "tell application \"Terminal\" to do script \"'$SEND_SCRIPT'\"" &
     echo "[+] Opened executor REPL in new Terminal window"
 else
-    echo "[!] send.sh not found at $SEND_SCRIPT"
+    echo "[!] send.sh not found — run setup.sh first"
 fi
 
 # launch Roblox with dylib injection (this terminal shows dylib logs)

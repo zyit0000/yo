@@ -1,43 +1,45 @@
 #!/bin/bash
-# wadiwad macOS setup — downloads latest executor.dylib from GitHub release
+# wadiwad macOS setup — downloads latest executor.dylib + send.sh from GitHub release
 set -e
 
 # ---- config ----
 REPO="zyit0000/yo"
 DYLIB_NAME="executor.dylib"
 INSTALL_DIR="$HOME/.wadiwad"
+DOWNLOAD_BASE="https://github.com/$REPO/releases/latest/download"
 # -----------------
 
 echo "[*] wadiwad macOS setup"
-
-# detect architecture
-ARCH=$(uname -m)
-echo "[*] Architecture: $ARCH"
-
-if [ "$ARCH" != "x86_64" ]; then
-    echo "[!] This build is for Intel (x86_64) Macs."
-    echo "[!] If you're on Apple Silicon, Rosetta will handle it."
-    echo "[!] Install Rosetta: softwareupdate --install-rosetta"
-fi
+echo "[*] Install dir: $INSTALL_DIR"
 
 # create install dir
 mkdir -p "$INSTALL_DIR"
 
-# remove old dylib
-if [ -f "$INSTALL_DIR/$DYLIB_NAME" ]; then
-    echo "[*] Removing old dylib..."
-    rm -f "$INSTALL_DIR/$DYLIB_NAME"
-fi
+# remove old files
+echo "[*] Removing old files..."
+rm -f "$INSTALL_DIR/$DYLIB_NAME"
+rm -f "$INSTALL_DIR/send.sh"
 
-# download latest from GitHub release
-echo "[*] Downloading latest $DYLIB_NAME from $REPO..."
-DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$DYLIB_NAME"
-curl -L -o "$INSTALL_DIR/$DYLIB_NAME" "$DOWNLOAD_URL"
-
+# download latest dylib
+echo "[*] Downloading $DYLIB_NAME..."
+curl -L -o "$INSTALL_DIR/$DYLIB_NAME" "$DOWNLOAD_BASE/$DYLIB_NAME"
 if [ ! -f "$INSTALL_DIR/$DYLIB_NAME" ]; then
-    echo "[-] Download failed!"
+    echo "[-] Failed to download $DYLIB_NAME"
     exit 1
 fi
+echo "[+] $DYLIB_NAME installed"
 
-echo "[+] Installed to $INSTALL_DIR/$DYLIB_NAME"
-echo "[+] Run start.sh to launch with injection"
+# download latest send.sh
+echo "[*] Downloading send.sh..."
+curl -L -o "$INSTALL_DIR/send.sh" "$DOWNLOAD_BASE/send.sh"
+if [ ! -f "$INSTALL_DIR/send.sh" ]; then
+    echo "[-] Failed to download send.sh"
+    exit 1
+fi
+chmod +x "$INSTALL_DIR/send.sh"
+echo "[+] send.sh installed"
+
+echo ""
+echo "[+] Setup complete!"
+echo "[+] Files installed to $INSTALL_DIR"
+echo "[+] Run start.sh to launch"
