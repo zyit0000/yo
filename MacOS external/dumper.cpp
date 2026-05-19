@@ -310,21 +310,155 @@ int main() {
         }
     }
 
-    std::cout << "\n========================================\n";
-    std::cout << "        PERMANENT OFFSETS DUMPED        \n";
-    std::cout << "========================================\n";
-    std::cout << "#define OFFSET_TASK_SCHEDULER_JOBS 0x" << std::hex << jobs_offset << "\n";
-    if (offset_name) std::cout << "#define OFFSET_INSTANCE_NAME 0x" << std::hex << offset_name << "\n";
-    if (offset_children) std::cout << "#define OFFSET_INSTANCE_CHILDREN 0x" << std::hex << offset_children << "\n";
-    if (offset_localplayer) std::cout << "#define OFFSET_PLAYERS_LOCALPLAYER 0x" << std::hex << offset_localplayer << "\n";
-    std::cout << "========================================\n\n";
-
+    uint32_t offset_class_desc = 0;
+    uint32_t offset_class_name = 0;
+    uint32_t offset_parent = 0;
+    mach_vm_address_t workspace = 0;
+    
     if (datamodel != 0) {
-        std::cout << "[+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
-    } else {
-        std::cout << "[-] Failed to find DataModel.\n";
+        // Find Workspace to resolve ClassDescriptor
+        mach_vm_address_t children_begin = read_ptr(task, datamodel + offset_children);
+        mach_vm_address_t children_end = read_ptr(task, datamodel + offset_children + 8);
+        uint64_t count = (children_end - children_begin) / 16;
+        
+        for (uint64_t i = 0; i < count; i++) {
+            mach_vm_address_t child = read_ptr(task, children_begin + (i * 16));
+            if (child) {
+                std::string s = read_string(task, child + offset_name);
+                if (s == "Workspace") {
+                    workspace = child;
+                    break;
+                }
+            }
+        }
+        
+        if (workspace) {
+            // 1. Resolve ClassDescriptor and Parent
+            for (uint32_t p_off = 0x10; p_off <= 0x80; p_off += 8) {
+                if (read_ptr(task, workspace + p_off) == datamodel) {
+                    offset_parent = p_off;
+                }
+            }
+            
+            for (uint32_t c_off = 0x10; c_off <= 0x40; c_off += 8) {
+                mach_vm_address_t cdesc = read_ptr(task, workspace + c_off);
+                if (cdesc > 0x100000000 && cdesc < 0x7FFFFFFFFFFF) {
+                    for (uint32_t s_off = 0x8; s_off <= 0x30; s_off += 8) {
+                        if (read_string(task, cdesc + s_off) == "Workspace") {
+                            offset_class_desc = c_off;
+                            offset_class_name = s_off;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
+    uint32_t humanoid_health = 0, humanoid_maxhealth = 0, humanoid_walkspeed = 0, humanoid_jumppower = 0;
+    uint32_t part_size = 0, part_cframe = 0;
+    
+    auto read_float = [&](mach_vm_address_t addr) -> float {
+        float val = 0;
+        mach_vm_size_t read_size = 0;
+        mach_vm_read_overwrite(task, addr, sizeof(float), (mach_vm_address_t)&val, &read_size);
+        return val;
+    };
+
+    if (workspace && offset_class_desc) {
+        std::cout << "[*] Scanning Workspace for BasePart and Humanoid...\n";
+        mach_vm_address_t children_begin = read_ptr(task, workspace + offset_children);
+        mach_vm_address_t children_end = read_ptr(task, workspace + offset_children + 8);
+        uint64_t count = (children_end - children_begin) / 16;
+        
+        for (uint64_t i = 0; i < count; i++) {
+            mach_vm_address_t model = read_ptr(task, children_begin + (i * 16));
+            if (!model) continue;
+            
+            mach_vm_address_t m_desc = read_ptr(task, model + offset_class_desc);
+            if (!m_desc) continue;
+            std::string m_class = read_string(task, m_desc + offset_class_name);
+            
+            if (m_class == "Model") {
+                // Scan Model children for Humanoid and Parts
+                mach_vm_address_t m_c_begin = read_ptr(task, model + offset_children);
+                mach_vm_address_t m_c_end = read_ptr(task, model + offset_children + 8);
+                uint64_t m_count = (m_c_end - m_c_begin) / 16;
+                if (m_count > 500) continue; // safety
+                
+                for (uint64_t j = 0; j < m_count; j++) {
+                    mach_vm_address_t child = read_ptr(task, m_c_begin + (j * 16));
+                    if (!child) continue;
+                    
+                    mach_vm_address_t c_desc = read_ptr(task, child + offset_class_desc);
+                    if (!c_desc) continue;
+                    std::string c_class = read_string(task, c_desc + offset_class_name);
+                    
+                    if (c_class == "Humanoid" && humanoid_walkspeed == 0) {
+                        std::cout << "  [+] Found Humanoid at 0x" << std::hex << child << "\n";
+                        for (uint32_t off = 0x100; off <= 0x300; off += 4) {
+                            float val = read_float(child + off);
+                            if (val == 16.0f) humanoid_walkspeed = off;
+                            if (val == 50.0f) humanoid_jumppower = off;
+                            if (val == 100.0f) {
+                                if (humanoid_health == 0) humanoid_health = off;
+                                else if (humanoid_maxhealth == 0 && off != humanoid_health) humanoid_maxhealth = off;
+                            }
+                        }
+                    } else if ((c_class == "Part" || c_class == "MeshPart") && part_size == 0) {
+                        std::string c_name = read_string(task, child + offset_name);
+                        if (c_name == "HumanoidRootPart") {
+                            std::cout << "  [+] Found HumanoidRootPart at 0x" << std::hex << child << "\n";
+                            for (uint32_t off = 0x100; off <= 0x250; off += 4) {
+                                float x = read_float(child + off);
+                                float y = read_float(child + off + 4);
+                                float z = read_float(child + off + 8);
+                                if (x == 2.0f && y == 2.0f && z == 1.0f) {
+                                    part_size = off;
+                                }
+                            }
+                            // CFrame usually around 0xC0-0x150, look for identity matrix elements
+                            for (uint32_t off = 0xA0; off <= 0x180; off += 4) {
+                                float r00 = read_float(child + off);
+                                float r11 = read_float(child + off + 16);
+                                float r22 = read_float(child + off + 32);
+                                if ((r00 == 1.0f || r00 == -1.0f) && (r11 == 1.0f || r11 == -1.0f) && (r22 == 1.0f || r22 == -1.0f)) {
+                                    part_cframe = off;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (humanoid_walkspeed && part_size) break;
+        }
+    }
+
+    std::cout << "\n========================================\n";
+    std::cout << "        PERMANENT OFFSETS DUMPED        \n";
+    std::cout << "========================================\n\n";
+
+    std::cout << "namespace Instance {\n";
+    if (offset_name) std::cout << "    inline constexpr uintptr_t Name = 0x" << std::hex << offset_name << ";\n";
+    if (offset_children) std::cout << "    inline constexpr uintptr_t Children = 0x" << std::hex << offset_children << ";\n";
+    if (offset_parent) std::cout << "    inline constexpr uintptr_t Parent = 0x" << std::hex << offset_parent << ";\n";
+    if (offset_class_desc) std::cout << "    inline constexpr uintptr_t ClassDescriptor = 0x" << std::hex << offset_class_desc << ";\n";
+    std::cout << "}\n\n";
+
+    std::cout << "namespace BasePart {\n";
+    if (part_cframe) std::cout << "    inline constexpr uintptr_t CFrame = 0x" << std::hex << part_cframe << "; // Note: Position is CFrame + 0x24\n";
+    if (part_size) std::cout << "    inline constexpr uintptr_t PartSize = 0x" << std::hex << part_size << ";\n";
+    std::cout << "}\n\n";
+
+    std::cout << "namespace Humanoid {\n";
+    if (humanoid_health) std::cout << "    inline constexpr uintptr_t Health = 0x" << std::hex << humanoid_health << ";\n";
+    if (humanoid_maxhealth) std::cout << "    inline constexpr uintptr_t MaxHealth = 0x" << std::hex << humanoid_maxhealth << ";\n";
+    if (humanoid_walkspeed) std::cout << "    inline constexpr uintptr_t WalkSpeed = 0x" << std::hex << humanoid_walkspeed << ";\n";
+    if (humanoid_jumppower) std::cout << "    inline constexpr uintptr_t JumpPower = 0x" << std::hex << humanoid_jumppower << ";\n";
+    std::cout << "}\n\n";
+
+    std::cout << "========================================\n\n";
     std::cout << "[+] Done.\n";
 
     return 0;
