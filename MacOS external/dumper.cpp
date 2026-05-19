@@ -193,45 +193,67 @@ int main() {
     uint64_t job_count = (jobs_end - jobs_begin) / job_size;
     std::cout << "[+] Found " << std::dec << job_count << " jobs (element size: " << job_size << " bytes).\n";
 
-    // 2. Iterate Jobs to find Name offset and specific jobs
+    // 2. Iterate Jobs to aggressively find DataModel and Workspace
     mach_vm_address_t datamodel = 0;
-    uint32_t job_name_offset = 0;
+    mach_vm_address_t workspace = 0;
+    uint32_t instance_name_offset = 0;
 
+    std::cout << "[*] Scanning all jobs (2-levels deep) for DataModel / Workspace...\n";
     for (uint64_t i = 0; i < job_count; i++) {
         mach_vm_address_t job_ptr_addr = jobs_begin + (i * job_size);
         mach_vm_address_t job = read_ptr(task, job_ptr_addr);
         
-        // Find job name offset by scanning job memory
-        std::string job_name = "";
-        for (uint32_t offset = 0x10; offset <= 0x100; offset += 8) {
-            std::string s = read_string(task, job + offset);
-            if (s == "WaitingHybridScriptsJob" || s == "Render" || s.find("Job") != std::string::npos) {
-                job_name = s;
-                job_name_offset = offset;
-                break;
-            }
-        }
-
-        if (!job_name.empty()) {
-            std::cout << "  -> Job [0x" << std::hex << job << "]: " << job_name << " (Name offset: 0x" << job_name_offset << ")\n";
-            
-            // WaitingHybridScriptsJob holds ScriptContext -> DataModel
-            if (job_name == "WaitingHybridScriptsJob") {
-                // We'll scan WaitingHybridScriptsJob for pointers to ScriptContext/DataModel
-                // DataModel has a specific Name ("Game") and children.
-                std::cout << "     [*] Scanning WaitingHybridScriptsJob for DataModel/ScriptContext...\n";
-                for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
-                    mach_vm_address_t ptr = read_ptr(task, job + j_off);
-                    if (ptr > 0x100000000) {
-                        // Scan ptr for "Game" string (DataModel name offset is usually 0x48)
-                        std::string dm_name = read_string(task, ptr + 0x48);
-                        if (dm_name == "Game" || dm_name == "Ugc") {
-                            datamodel = ptr;
-                            std::cout << "     [+] Found DataModel at Job + 0x" << std::hex << j_off << " -> 0x" << datamodel << "\n";
-                            std::cout << "     [+] DataModel Name offset: 0x48\n";
-                            break;
-                        }
+        for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
+            mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
+            if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
+                // Check Level 1
+                for (uint32_t name_off = 0x28; name_off <= 0x68; name_off += 8) {
+                    std::string name = read_string(task, ptr1 + name_off);
+                    if (name == "Game" || name == "Workspace") {
+                        if (name == "Game") datamodel = ptr1;
+                        if (name == "Workspace") workspace = ptr1;
+                        instance_name_offset = name_off;
+                        std::cout << "[+] Found " << name << " at Job + 0x" << std::hex << j_off << " (Name off: 0x" << name_off << ")\n";
+                        break;
                     }
+                }
+
+                if (!datamodel && !workspace) {
+                    // Check Level 2
+                    for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
+                        mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
+                        if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
+                            for (uint32_t name_off = 0x28; name_off <= 0x68; name_off += 8) {
+                                std::string name = read_string(task, ptr2 + name_off);
+                                if (name == "Game" || name == "Workspace") {
+                                    if (name == "Game") datamodel = ptr2;
+                                    if (name == "Workspace") workspace = ptr2;
+                                    instance_name_offset = name_off;
+                                    std::cout << "[+] Found " << name << " at Job + 0x" << std::hex << j_off << " -> 0x" << p_off << " (Name off: 0x" << name_off << ")\n";
+                                    break;
+                                }
+                            }
+                        }
+                        if (datamodel || workspace) break;
+                    }
+                }
+            }
+            if (datamodel || workspace) break;
+        }
+        if (datamodel || workspace) break;
+    }
+
+    if (datamodel == 0 && workspace != 0) {
+        std::cout << "[*] Found Workspace but not DataModel. Finding DataModel via Workspace's Parent...\n";
+        // Scan for Parent offset in Workspace
+        for (uint32_t p_off = 0x30; p_off <= 0x80; p_off += 8) {
+            mach_vm_address_t parent = read_ptr(task, workspace + p_off);
+            if (parent > 0x100000000 && parent < 0x7FFFFFFFFFFF) {
+                std::string p_name = read_string(task, parent + instance_name_offset);
+                if (p_name == "Game" || p_name == "Ugc") {
+                    datamodel = parent;
+                    std::cout << "[+] Found DataModel via Parent at offset: 0x" << std::hex << p_off << "\n";
+                    break;
                 }
             }
         }
@@ -241,7 +263,6 @@ int main() {
         std::cout << "[+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
         
         // Scan DataModel for Children offset
-        // Children is a std::vector<shared_ptr<Instance>>. Usually at offset 0x50, 0x58, 0x70
         uint32_t children_offset = 0;
         mach_vm_address_t children_begin = 0, children_end = 0;
 
@@ -253,7 +274,6 @@ int main() {
             if (begin != 0 && end > begin && cap >= end) {
                 uint64_t count = (end - begin) / 16; // shared_ptr is 16 bytes
                 if (count > 0 && count < 200) {
-                    // This is likely the children vector
                     children_offset = off;
                     children_begin = begin;
                     children_end = end;
@@ -267,38 +287,44 @@ int main() {
             uint64_t count = (children_end - children_begin) / 16;
             std::cout << "[+] DataModel has " << std::dec << count << " children.\n";
 
-            // Print children to find Workspace, Players
             mach_vm_address_t players = 0;
-            mach_vm_address_t workspace = 0;
-
-            for (uint64_t i = 0; i < count; i++) {
-                // shared_ptr layout: [ptr, control_block]
-                mach_vm_address_t child_ptr = read_ptr(task, children_begin + (i * 16));
-                if (child_ptr) {
-                    std::string child_name = read_string(task, child_ptr + 0x48); // Assuming name is 0x48
-                    if (!child_name.empty()) {
-                        std::cout << "  -> Child: " << child_name << " (0x" << std::hex << child_ptr << ")\n";
-                        if (child_name == "Workspace") workspace = child_ptr;
-                        if (child_name == "Players") players = child_ptr;
+            if (workspace == 0) {
+                // Find workspace and players
+                for (uint64_t i = 0; i < count; i++) {
+                    mach_vm_address_t child_ptr = read_ptr(task, children_begin + (i * 16));
+                    if (child_ptr) {
+                        std::string child_name = read_string(task, child_ptr + instance_name_offset);
+                        if (!child_name.empty()) {
+                            std::cout << "  -> Child: " << child_name << " (0x" << std::hex << child_ptr << ")\n";
+                            if (child_name == "Workspace") workspace = child_ptr;
+                            if (child_name == "Players") players = child_ptr;
+                        }
+                    }
+                }
+            } else {
+                for (uint64_t i = 0; i < count; i++) {
+                    mach_vm_address_t child_ptr = read_ptr(task, children_begin + (i * 16));
+                    if (child_ptr) {
+                        std::string child_name = read_string(task, child_ptr + instance_name_offset);
+                        if (child_name == "Players") {
+                            players = child_ptr;
+                            std::cout << "  -> Child: " << child_name << " (0x" << std::hex << child_ptr << ")\n";
+                        }
                     }
                 }
             }
 
             if (players != 0) {
                 std::cout << "[+] Found Players: 0x" << std::hex << players << "\n";
-                // LocalPlayer is usually an explicit pointer in Players (offset 0x100-0x150)
-                // Let's scan Players for a valid pointer that points to an Instance with a valid Name
                 uint32_t localplayer_offset = 0;
                 mach_vm_address_t localplayer = 0;
                 
-                for (uint32_t off = 0x50; off <= 0x150; off += 8) {
+                for (uint32_t off = 0x50; off <= 0x1A0; off += 8) {
                     mach_vm_address_t ptr = read_ptr(task, players + off);
-                    if (ptr > 0x100000000) {
-                        // Check if it has a Parent pointer pointing back to Players
-                        // Parent is usually at offset 0x40, 0x60, etc.
-                        for (uint32_t p_off = 0x30; p_off <= 0x70; p_off += 8) {
+                    if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
+                        for (uint32_t p_off = 0x30; p_off <= 0x80; p_off += 8) {
                             if (read_ptr(task, ptr + p_off) == players) {
-                                std::string lp_name = read_string(task, ptr + 0x48);
+                                std::string lp_name = read_string(task, ptr + instance_name_offset);
                                 if (!lp_name.empty()) {
                                     localplayer = ptr;
                                     localplayer_offset = off;
