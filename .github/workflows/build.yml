@@ -27,6 +27,18 @@ jobs:
           file executor.dylib
           codesign -dv executor.dylib 2>&1 || true
 
+      - name: Build external dumper (x86_64, macOS 10.13+)
+        run: |
+          cd "MacOS external"
+          clang++ -std=c++17 -O2 \
+            -mmacosx-version-min=10.13 \
+            -arch x86_64 \
+            -o dumper \
+            dumper.cpp
+          codesign -f -s - dumper
+          file dumper
+          codesign -dv dumper 2>&1 || true
+
       - name: Delete old release (if exists)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,8 +50,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create latest \
-            --title "wadiwad macOS executor" \
-            --notes "Auto-built executor.dylib for Intel macOS 10.13+" \
+            --title "wadiwad macOS executor & external dumper" \
+            --notes "Auto-built executor.dylib and dumper for Intel macOS 10.13+" \
             --latest \
             MacOS/executor.dylib \
-            MacOS/send.sh
+            MacOS/send.sh \
+            "MacOS external/dumper" \
+            "MacOS external/start.sh"
