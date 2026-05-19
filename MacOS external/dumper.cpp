@@ -212,97 +212,107 @@ int main() {
     std::cout << "[+] WaitingHybridScriptsJob: 0x" << std::hex << whs_job << "\n";
     std::cout << "[+] RenderJob: 0x" << std::hex << render_job << "\n";
 
-    // 3. Absolute Brute-Force DataModel & Permanent Offset Resolver
+    // 3. Dynamic Instance Offset Resolver via Stats -> Workspace
     mach_vm_address_t datamodel = 0;
-    uint32_t offset_children = 0;
+    mach_vm_address_t workspace = 0;
+    mach_vm_address_t stats_obj = 0;
     uint32_t offset_name = 0;
-    mach_vm_address_t players_svc = 0;
-    
-    std::cout << "[*] Commencing deep-scan heuristics for DataModel via Children vector...\n";
+    uint32_t offset_children = 0;
+    uint32_t offset_parent = 0;
+    uint32_t offset_class_desc = 0;
+    uint32_t offset_class_name = 0;
+
+    std::cout << "[*] Scanning all jobs dynamically for Stats object...\n";
     for (uint64_t i = 0; i < job_count; i++) {
         mach_vm_address_t job = read_ptr(task, jobs_begin + (i * job_size));
-        
         for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
-            mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
-            if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
-                
-                // Scan ptr1 directly
-                mach_vm_address_t cands[2] = { ptr1, 0 };
-                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
-                    mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
-                    if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
-                        cands[1] = ptr2;
-                        
-                        for (int k = 0; k < 2; k++) {
-                            mach_vm_address_t cand = cands[k];
-                            
-                            for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
-                                mach_vm_address_t begin = read_ptr(task, cand + v_off);
-                                mach_vm_address_t end = read_ptr(task, cand + v_off + 8);
-                                mach_vm_address_t cap = read_ptr(task, cand + v_off + 16);
-                                
-                                if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
-                                    uint64_t count = (end - begin) / 16;
-                                    if (count >= 30 && count <= 150) {
-                                        
-                                        int service_matches = 0;
-                                        uint32_t found_name_off = 0;
-                                        
-                                        for (uint64_t c = 0; c < std::min<uint64_t>(30, count); c++) {
-                                            mach_vm_address_t child = read_ptr(task, begin + (c * 16));
-                                            if (child > 0x100000000) {
-                                                for (uint32_t s_off = 0x10; s_off <= 0xA0; s_off += 8) {
-                                                    std::string s = read_string(task, child + s_off);
-                                                    if (s == "Workspace" || s == "Players" || s == "Lighting" || s == "ReplicatedStorage" || s == "CoreGui") {
-                                                        service_matches++;
-                                                        found_name_off = s_off;
-                                                        if (s == "Players") players_svc = child;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        
-                                        if (service_matches >= 3) {
-                                            datamodel = cand;
-                                            offset_children = v_off;
-                                            offset_name = found_name_off;
-                                            std::cout << "  [+] BINGO! DataModel Confirmed: 0x" << std::hex << datamodel << "\n";
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if (datamodel) break;
-                        }
-                        if (datamodel) break;
+            mach_vm_address_t ptr = read_ptr(task, job + j_off);
+            if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
+                for (uint32_t str_off = 0x10; str_off <= 0x80; str_off += 8) {
+                    std::string s = read_string(task, ptr + str_off);
+                    if (s == "(In - Out) KBps:" || s == "Instance count:") {
+                        stats_obj = ptr;
+                        std::cout << "[+] Found Stats object at Job + 0x" << std::hex << j_off << "\n";
+                        break;
                     }
                 }
-                if (datamodel) break;
             }
-            if (datamodel) break;
+            if (stats_obj) break;
         }
-        if (datamodel) break;
+        if (stats_obj) break;
     }
-    
-    uint32_t offset_localplayer = 0;
-    mach_vm_address_t localplayer = 0;
-    
-    if (players_svc) {
-        std::cout << "[*] Scanning Players service (0x" << std::hex << players_svc << ") for LocalPlayer...\n";
-        for (uint32_t lp_off = 0x10; lp_off <= 0x200; lp_off += 8) {
-            mach_vm_address_t lp_cand = read_ptr(task, players_svc + lp_off);
-            if (lp_cand > 0x100000000 && lp_cand < 0x7FFFFFFFFFFF) {
-                // Check if lp_cand is an Instance by reading its name
-                std::string lp_name = read_string(task, lp_cand + offset_name);
-                if (lp_name.length() >= 3 && lp_name.length() <= 20) {
-                    bool printable = true;
-                    for (char c : lp_name) { if (c < 32 || c > 126) printable = false; }
-                    if (printable) {
-                        // Very likely the LocalPlayer
-                        std::cout << "  [+] Found LocalPlayer candidate: '" << lp_name << "' at offset 0x" << std::hex << lp_off << "\n";
-                        offset_localplayer = lp_off;
-                        localplayer = lp_cand;
+
+    if (stats_obj) {
+        std::cout << "[*] Scanning Stats object for Workspace...\n";
+        for (uint32_t p_off = 0x8; p_off <= 0x500; p_off += 8) {
+            mach_vm_address_t cand = read_ptr(task, stats_obj + p_off);
+            if (cand > 0x100000000 && cand < 0x7FFFFFFFFFFF) {
+                for (uint32_t s_off = 0x10; s_off <= 0xA0; s_off += 8) {
+                    if (read_string(task, cand + s_off) == "Workspace") {
+                        workspace = cand;
+                        offset_name = s_off;
+                        std::cout << "  [+] Found Workspace at 0x" << std::hex << workspace << " (Name offset: 0x" << offset_name << ")\n";
+                        break;
+                    }
+                }
+            }
+            if (workspace) break;
+        }
+    }
+
+    if (workspace) {
+        // Resolve ClassDescriptor
+        for (uint32_t c_off = 0x10; c_off <= 0x60; c_off += 8) {
+            mach_vm_address_t cdesc = read_ptr(task, workspace + c_off);
+            if (cdesc > 0x100000000 && cdesc < 0x7FFFFFFFFFFF) {
+                for (uint32_t s_off = 0x8; s_off <= 0x30; s_off += 8) {
+                    if (read_string(task, cdesc + s_off) == "Workspace") {
+                        offset_class_desc = c_off;
+                        offset_class_name = s_off;
+                        std::cout << "  [+] Resolved ClassDescriptor offset: 0x" << std::hex << offset_class_desc << "\n";
+                        break;
+                    }
+                }
+            }
+            if (offset_class_desc) break;
+        }
+
+        // Resolve Children
+        for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
+            mach_vm_address_t begin = read_ptr(task, workspace + v_off);
+            mach_vm_address_t end = read_ptr(task, workspace + v_off + 8);
+            mach_vm_address_t cap = read_ptr(task, workspace + v_off + 16);
+            if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                uint64_t count = (end - begin) / 16;
+                if (count >= 2 && count < 20000) {
+                    int matches = 0;
+                    for (uint64_t i = 0; i < std::min<uint64_t>(20, count); i++) {
+                        mach_vm_address_t child = read_ptr(task, begin + (i * 16));
+                        if (child) {
+                            std::string cname = read_string(task, child + offset_name);
+                            if (cname == "Terrain" || cname == "Camera") matches++;
+                        }
+                    }
+                    if (matches >= 1) {
+                        offset_children = v_off;
+                        std::cout << "  [+] Resolved Children offset: 0x" << std::hex << offset_children << "\n";
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Resolve Parent
+        if (offset_children) {
+            mach_vm_address_t begin = read_ptr(task, workspace + offset_children);
+            mach_vm_address_t child = read_ptr(task, begin); // Usually Camera or Terrain
+            if (child) {
+                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
+                    if (read_ptr(task, child + p_off) == workspace) {
+                        offset_parent = p_off;
+                        datamodel = read_ptr(task, workspace + offset_parent);
+                        std::cout << "  [+] Resolved Parent offset: 0x" << std::hex << offset_parent << "\n";
+                        std::cout << "  [+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
                         break;
                     }
                 }
@@ -310,50 +320,7 @@ int main() {
         }
     }
 
-    uint32_t offset_class_desc = 0;
-    uint32_t offset_class_name = 0;
-    uint32_t offset_parent = 0;
-    mach_vm_address_t workspace = 0;
-    
-    if (datamodel != 0) {
-        // Find Workspace to resolve ClassDescriptor
-        mach_vm_address_t children_begin = read_ptr(task, datamodel + offset_children);
-        mach_vm_address_t children_end = read_ptr(task, datamodel + offset_children + 8);
-        uint64_t count = (children_end - children_begin) / 16;
-        
-        for (uint64_t i = 0; i < count; i++) {
-            mach_vm_address_t child = read_ptr(task, children_begin + (i * 16));
-            if (child) {
-                std::string s = read_string(task, child + offset_name);
-                if (s == "Workspace") {
-                    workspace = child;
-                    break;
-                }
-            }
-        }
-        
-        if (workspace) {
-            // 1. Resolve ClassDescriptor and Parent
-            for (uint32_t p_off = 0x10; p_off <= 0x80; p_off += 8) {
-                if (read_ptr(task, workspace + p_off) == datamodel) {
-                    offset_parent = p_off;
-                }
-            }
-            
-            for (uint32_t c_off = 0x10; c_off <= 0x40; c_off += 8) {
-                mach_vm_address_t cdesc = read_ptr(task, workspace + c_off);
-                if (cdesc > 0x100000000 && cdesc < 0x7FFFFFFFFFFF) {
-                    for (uint32_t s_off = 0x8; s_off <= 0x30; s_off += 8) {
-                        if (read_string(task, cdesc + s_off) == "Workspace") {
-                            offset_class_desc = c_off;
-                            offset_class_name = s_off;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
+
 
     uint32_t humanoid_health = 0, humanoid_maxhealth = 0, humanoid_walkspeed = 0, humanoid_jumppower = 0;
     uint32_t part_size = 0, part_cframe = 0;
