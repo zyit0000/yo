@@ -212,29 +212,60 @@ int main() {
     std::cout << "[+] WaitingHybridScriptsJob: 0x" << std::hex << whs_job << "\n";
     std::cout << "[+] RenderJob: 0x" << std::hex << render_job << "\n";
 
-    auto scan_job = [&](mach_vm_address_t job, std::string job_name) {
-        if (!job) return;
-        std::cout << "[*] Scanning " << job_name << " (2-levels deep)...\n";
+    auto is_datamodel = [&](mach_vm_address_t obj, uint32_t& out_children_off, uint32_t& out_name_off) -> bool {
+        // Scan for children vector
+        for (uint32_t off = 0x30; off <= 0x100; off += 8) {
+            mach_vm_address_t begin = read_ptr(task, obj + off);
+            mach_vm_address_t end = read_ptr(task, obj + off + 8);
+            mach_vm_address_t cap = read_ptr(task, obj + off + 16);
+            if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                uint64_t count = (end - begin) / 16;
+                if (count > 5 && count < 200) {
+                    // Check children
+                    for (uint64_t i = 0; i < count; i++) {
+                        mach_vm_address_t child = read_ptr(task, begin + (i * 16));
+                        if (child > 0x100000000 && child < 0x7FFFFFFFFFFF) {
+                            for (uint32_t name_off = 0x28; name_off <= 0x68; name_off += 8) {
+                                std::string name = read_string(task, child + name_off);
+                                if (name == "Workspace" || name == "Players") {
+                                    out_children_off = off;
+                                    out_name_off = name_off;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    mach_vm_address_t datamodel = 0;
+    mach_vm_address_t workspace = 0;
+    uint32_t children_offset = 0;
+    uint32_t instance_name_offset = 0;
+
+    auto scan_job_for_datamodel = [&](mach_vm_address_t job) {
+        if (!job || datamodel) return;
         for (uint32_t j_off = 0x10; j_off <= 0x200; j_off += 8) {
             mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
             if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
-                // Level 1 strings
-                for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
-                    std::string s = read_string(task, ptr1 + str_off);
-                    if (s == "Game" || s == "Workspace" || s == "Players" || s == "DataModel" || s == "ScriptContext" || s == "RenderView") {
-                        std::cout << "  [!] Level 1 Match: '" << s << "' at Job + 0x" << std::hex << j_off << " -> Name off: 0x" << str_off << " (Object: 0x" << ptr1 << ")\n";
-                    }
+                // Check if ptr1 is DataModel
+                if (is_datamodel(ptr1, children_offset, instance_name_offset)) {
+                    datamodel = ptr1;
+                    std::cout << "[+] Found DataModel directly at Job + 0x" << std::hex << j_off << "\n";
+                    return;
                 }
-
-                // Level 2 pointers
-                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
+                
+                // Check if ptr1's pointers are DataModel (e.g. ptr1 is ScriptContext, ptr1->Parent is DataModel)
+                for (uint32_t p_off = 0x30; p_off <= 0x80; p_off += 8) {
                     mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
                     if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
-                        for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
-                            std::string s = read_string(task, ptr2 + str_off);
-                            if (s == "Game" || s == "Workspace" || s == "Players" || s == "DataModel" || s == "ScriptContext" || s == "RenderView") {
-                                std::cout << "  [!] Level 2 Match: '" << s << "' at Job + 0x" << std::hex << j_off << " -> 0x" << p_off << " -> Name off: 0x" << str_off << " (Object: 0x" << ptr2 << ")\n";
-                            }
+                        if (is_datamodel(ptr2, children_offset, instance_name_offset)) {
+                            datamodel = ptr2;
+                            std::cout << "[+] Found DataModel via Parent at Job + 0x" << std::hex << j_off << " -> 0x" << p_off << "\n";
+                            return;
                         }
                     }
                 }
@@ -242,13 +273,9 @@ int main() {
         }
     };
 
-    scan_job(whs_job, "WaitingHybridScriptsJob");
-    scan_job(render_job, "RenderJob");
-
-    std::cout << "[*] Deep scan complete. Check output for offsets.\n";
-    mach_vm_address_t datamodel = 0;
-    mach_vm_address_t workspace = 0;
-    uint32_t instance_name_offset = 0;
+    std::cout << "[*] Scanning jobs for DataModel structure...\n";
+    scan_job_for_datamodel(whs_job);
+    scan_job_for_datamodel(render_job);
 
     if (datamodel != 0) {
         std::cout << "[+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
