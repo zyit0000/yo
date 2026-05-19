@@ -123,25 +123,60 @@ int main() {
 
     // 1. Scan TaskScheduler for Jobs vector
     // A vector is [begin, end, cap]. We look for sensible values.
-    std::cout << "[*] Scanning TaskScheduler for Jobs vector...\n";
+    std::cout << "[*] Scanning TaskScheduler for Jobs vector (0x10 - 0x500)...\n";
     mach_vm_address_t jobs_begin = 0, jobs_end = 0;
     uint32_t jobs_offset = 0;
+    bool is_shared_ptr_vector = false;
 
-    for (uint32_t offset = 0x100; offset <= 0x200; offset += 8) {
+    for (uint32_t offset = 0x10; offset <= 0x500; offset += 8) {
         mach_vm_address_t begin = read_ptr(task, task_scheduler + offset);
         mach_vm_address_t end = read_ptr(task, task_scheduler + offset + 8);
         mach_vm_address_t cap = read_ptr(task, task_scheduler + offset + 16);
 
         if (begin != 0 && end > begin && cap >= end) {
-            uint64_t count = (end - begin) / 8; // pointer size is 8
-            if (count > 0 && count < 100) {
-                // heuristic: verify if the first pointer points to valid memory
+            uint64_t bytes_diff = end - begin;
+            
+            // Job vector usually has ~10 to 50 jobs. 
+            // If raw ptr: bytes_diff = jobs * 8. If shared_ptr: bytes_diff = jobs * 16.
+            if (bytes_diff > 0 && bytes_diff < 0x1000) {
                 mach_vm_address_t first_job = read_ptr(task, begin);
-                if (first_job > 0x100000000) { // arbitrary valid pointer check
-                    jobs_begin = begin;
-                    jobs_end = end;
-                    jobs_offset = offset;
-                    break;
+                // Heuristic: The first job is a pointer to the heap or executable memory
+                if (first_job > 0x1000) {
+                    std::cout << "  [?] Found potential vector at offset 0x" << std::hex << offset << std::dec 
+                              << " (bytes: " << bytes_diff << ", first_ptr: 0x" << std::hex << first_job << std::dec << ")\n";
+
+                    // Let's read the name of the first job to see if it makes sense (e.g. "Arbiter", "Render")
+                    bool looks_like_job = false;
+                    for (uint32_t name_off = 0x10; name_off <= 0x100; name_off += 8) {
+                        std::string s = read_string(task, first_job + name_off);
+                        if (s == "Arbiter" || s == "Render" || s.find("Job") != std::string::npos || s == "WaitingHybridScriptsJob") {
+                            looks_like_job = true;
+                            break;
+                        }
+                    }
+
+                    // If it's a shared_ptr, the raw ptr is at begin, but the next job is at begin + 16
+                    if (!looks_like_job) {
+                        mach_vm_address_t first_job_shared = read_ptr(task, begin + 16);
+                        if (first_job_shared > 0x1000) {
+                             for (uint32_t name_off = 0x10; name_off <= 0x100; name_off += 8) {
+                                std::string s = read_string(task, first_job_shared + name_off);
+                                if (s == "Arbiter" || s == "Render" || s.find("Job") != std::string::npos || s == "WaitingHybridScriptsJob") {
+                                    looks_like_job = true;
+                                    is_shared_ptr_vector = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (looks_like_job) {
+                        jobs_begin = begin;
+                        jobs_end = end;
+                        jobs_offset = offset;
+                        std::cout << "  [+] Confirmed! This is the Jobs vector.\n";
+                        break;
+                    }
                 }
             }
         }
@@ -154,15 +189,16 @@ int main() {
 
     std::cout << "[+] Jobs Vector at TaskScheduler + 0x" << std::hex << jobs_offset << "\n";
     
-    uint64_t job_count = (jobs_end - jobs_begin) / 8;
-    std::cout << "[+] Found " << std::dec << job_count << " jobs.\n";
+    uint64_t job_size = is_shared_ptr_vector ? 16 : 8;
+    uint64_t job_count = (jobs_end - jobs_begin) / job_size;
+    std::cout << "[+] Found " << std::dec << job_count << " jobs (element size: " << job_size << " bytes).\n";
 
     // 2. Iterate Jobs to find Name offset and specific jobs
     mach_vm_address_t datamodel = 0;
     uint32_t job_name_offset = 0;
 
     for (uint64_t i = 0; i < job_count; i++) {
-        mach_vm_address_t job_ptr_addr = jobs_begin + (i * 8);
+        mach_vm_address_t job_ptr_addr = jobs_begin + (i * job_size);
         mach_vm_address_t job = read_ptr(task, job_ptr_addr);
         
         // Find job name offset by scanning job memory
