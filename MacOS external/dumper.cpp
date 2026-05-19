@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach-o/dyld_images.h>
 #include <sys/sysctl.h>
 #include <libproc.h>
@@ -15,8 +16,8 @@ pid_t get_pid_by_name(const char* name) {
 
     for (int i = 0; i < n_pids; i++) {
         struct proc_bsdinfo proc;
-        int st = proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &proc, proc_bsdinfo::PROC_PIDTBSDINFO_SIZE);
-        if (st == proc_bsdinfo::PROC_PIDTBSDINFO_SIZE) {
+        int st = proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &proc, PROC_PIDTBSDINFO_SIZE);
+        if (st == PROC_PIDTBSDINFO_SIZE) {
             if (strcmp(name, proc.pbi_name) == 0 || strstr(proc.pbi_comm, name) != nullptr) {
                 return pids[i];
             }
