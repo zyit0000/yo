@@ -242,28 +242,33 @@ int main() {
     
     if (stats_obj) {
         std::cout << "[*] Scanning Stats object for Parent (DataModel) candidates...\n";
-        for (uint32_t p_off = 0x10; p_off <= 0x150; p_off += 8) {
+        for (uint32_t p_off = 0x8; p_off <= 0x500; p_off += 8) {
             mach_vm_address_t cand = read_ptr(task, stats_obj + p_off);
             if (cand > 0x100000000 && cand < 0x7FFFFFFFFFFF) {
                 
-                // Check inline strings
-                for (uint32_t s_off = 0x10; s_off <= 0xA0; s_off += 8) {
+                // Check inline strings - very aggressive range
+                for (uint32_t s_off = 0x0; s_off <= 0x200; s_off += 8) {
                     std::string s = read_string(task, cand + s_off);
-                    if (s == "DataModel" || s == "Game" || s == "UGCGame") {
-                        std::cout << "  [+] Found '" << s << "' inline at cand + 0x" << std::hex << s_off << " (cand = Stats + 0x" << p_off << " -> 0x" << cand << ")\n";
+                    if (s.length() >= 4 && s.length() < 20) {
+                        if (s == "DataModel" || s == "Workspace" || s == "Players" || s == "Game" || s == "CoreGui") {
+                            std::cout << "  [+] Found '" << s << "' inline at cand + 0x" << std::hex << s_off << " (cand = Stats + 0x" << p_off << " -> 0x" << cand << ")\n";
+                            if (s == "DataModel") datamodel = cand;
+                        }
                     }
                 }
                 
-                // Check ClassDescriptor strings
-                for (uint32_t c_off = 0x10; c_off <= 0x40; c_off += 8) {
+                // Check ClassDescriptor strings - aggressive range
+                for (uint32_t c_off = 0x0; c_off <= 0x100; c_off += 8) {
                     mach_vm_address_t desc = read_ptr(task, cand + c_off);
                     if (desc > 0x100000000 && desc < 0x7FFFFFFFFFFF) {
-                        for (uint32_t s_off = 0x8; s_off <= 0x80; s_off += 8) {
+                        for (uint32_t s_off = 0x0; s_off <= 0x100; s_off += 8) {
                             std::string s = read_string(task, desc + s_off);
-                            if (s == "DataModel" || s == "Workspace" || s == "Players" || s == "Instance") {
-                                std::cout << "  [+] Found ClassName '" << s << "' via desc at cand + 0x" << std::hex << c_off << ", string at desc + 0x" << s_off << "\n";
-                                std::cout << "      -> cand = Stats + 0x" << p_off << " -> 0x" << cand << "\n";
-                                if (s == "DataModel") datamodel = cand;
+                            if (s.length() >= 4 && s.length() < 20) {
+                                if (s == "DataModel" || s == "Workspace" || s == "Players" || s == "Game" || s == "CoreGui") {
+                                    std::cout << "  [+] Found ClassName '" << s << "' via desc at cand + 0x" << std::hex << c_off << ", string at desc + 0x" << s_off << "\n";
+                                    std::cout << "      -> cand = Stats + 0x" << p_off << " -> 0x" << cand << "\n";
+                                    if (s == "DataModel") datamodel = cand;
+                                }
                             }
                         }
                     }
