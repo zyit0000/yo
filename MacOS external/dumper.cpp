@@ -85,17 +85,18 @@ int main() {
     mach_vm_address_t base_address = (mach_vm_address_t)image.imageLoadAddress;
     std::cout << "[+] Roblox Base Address: 0x" << std::hex << base_address << std::dec << "\n";
 
-    // TODO: AOB Scan for TaskScheduler or other offsets based on signatures
-    // For now, this is just a skeleton demonstrating the mach API access.
-    std::cout << "[*] Scanning for TaskScheduler... (Implementation needed based on patterns)\n";
+    // 0x10657AFB0 is the raw TaskScheduler address (based at 0x100000000)
+    // So the offset from base is 0x657AFB0
+    uintptr_t ts_offset = 0x657AFB0;
+    mach_vm_address_t ts_ptr_addr = base_address + ts_offset;
 
-    // Example reading a few bytes from base
-    uint32_t magic = 0;
-    if (read_memory(task, base_address, &magic, sizeof(magic))) {
-        std::cout << "[+] Magic at base: 0x" << std::hex << magic << std::dec << "\n";
-        if (magic == 0xfeedfacf) { // Mach-O 64-bit magic
-             std::cout << "    -> Valid Mach-O 64-bit header\n";
-        }
+    std::cout << "[*] Reading TaskScheduler pointer at base + 0x" << std::hex << ts_offset << " (0x" << ts_ptr_addr << ")...\n";
+
+    uintptr_t task_scheduler = read_ptr(task, ts_ptr_addr);
+    if (task_scheduler != 0) {
+        std::cout << "[+] TaskScheduler Instance: 0x" << std::hex << task_scheduler << std::dec << "\n";
+    } else {
+        std::cout << "[-] Failed to read TaskScheduler pointer, or it's null.\n";
     }
 
     std::cout << "[+] Done.\n";
