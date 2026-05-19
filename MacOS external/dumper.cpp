@@ -193,8 +193,9 @@ int main() {
     uint64_t job_count = (jobs_end - jobs_begin) / job_size;
     std::cout << "[+] Found " << std::dec << job_count << " jobs (element size: " << job_size << " bytes).\n";
 
-    // 2. Locate WaitingHybridScriptsJob and analyze its pointers
+    // 2. Locate Target Jobs and scan them deeply
     mach_vm_address_t whs_job = 0;
+    mach_vm_address_t render_job = 0;
 
     for (uint64_t i = 0; i < job_count; i++) {
         mach_vm_address_t job_ptr_addr = jobs_begin + (i * job_size);
@@ -202,43 +203,49 @@ int main() {
         
         for (uint32_t offset = 0x10; offset <= 0x100; offset += 8) {
             std::string s = read_string(task, job + offset);
-            if (s == "WaitingHybridScriptsJob") {
-                whs_job = job;
-                std::cout << "[+] Found WaitingHybridScriptsJob at 0x" << std::hex << job << " (Name offset: 0x" << offset << ")\n";
-                break;
-            }
+            if (s == "WaitingHybridScriptsJob") whs_job = job;
+            if (s == "Render") render_job = job; // Sometimes just "Render"
+            if (s == "RenderJob") render_job = job;
         }
-        if (whs_job) break; // Found it
     }
 
-    if (whs_job == 0) {
-        std::cout << "[-] Could not find WaitingHybridScriptsJob.\n";
-        return 1;
-    }
+    std::cout << "[+] WaitingHybridScriptsJob: 0x" << std::hex << whs_job << "\n";
+    std::cout << "[+] RenderJob: 0x" << std::hex << render_job << "\n";
 
-    std::cout << "[*] Dumping pointers inside WaitingHybridScriptsJob (0x10 to 0x200)...\n";
-    for (uint32_t j_off = 0x10; j_off <= 0x200; j_off += 8) {
-        mach_vm_address_t ptr = read_ptr(task, whs_job + j_off);
-        if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
-            std::cout << "  -> Pointer at offset 0x" << std::hex << j_off << " : 0x" << ptr << "\n";
-            
-            // Scan this pointer for any std::strings (0x10 to 0xA0)
-            for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
-                std::string s = read_string(task, ptr + str_off);
-                if (s.length() >= 3 && s.length() < 50) {
-                    // Filter out garbage text somewhat
-                    bool printable = true;
-                    for (char c : s) { if (c < 32 || c > 126) { printable = false; break; } }
-                    if (printable) {
-                        std::cout << "       [String @ 0x" << std::hex << str_off << "]: " << s << "\n";
+    auto scan_job = [&](mach_vm_address_t job, std::string job_name) {
+        if (!job) return;
+        std::cout << "[*] Scanning " << job_name << " (2-levels deep)...\n";
+        for (uint32_t j_off = 0x10; j_off <= 0x200; j_off += 8) {
+            mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
+            if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
+                // Level 1 strings
+                for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
+                    std::string s = read_string(task, ptr1 + str_off);
+                    if (s == "Game" || s == "Workspace" || s == "Players" || s == "DataModel" || s == "ScriptContext" || s == "RenderView") {
+                        std::cout << "  [!] Level 1 Match: '" << s << "' at Job + 0x" << std::hex << j_off << " -> Name off: 0x" << str_off << " (Object: 0x" << ptr1 << ")\n";
+                    }
+                }
+
+                // Level 2 pointers
+                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
+                    mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
+                    if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
+                        for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
+                            std::string s = read_string(task, ptr2 + str_off);
+                            if (s == "Game" || s == "Workspace" || s == "Players" || s == "DataModel" || s == "ScriptContext" || s == "RenderView") {
+                                std::cout << "  [!] Level 2 Match: '" << s << "' at Job + 0x" << std::hex << j_off << " -> 0x" << p_off << " -> Name off: 0x" << str_off << " (Object: 0x" << ptr2 << ")\n";
+                            }
+                        }
                     }
                 }
             }
         }
-    }
+    };
 
-    std::cout << "[*] Dumping complete. Please check the output for 'Game', 'Workspace', or 'ScriptContext'.\n";
+    scan_job(whs_job, "WaitingHybridScriptsJob");
+    scan_job(render_job, "RenderJob");
 
+    std::cout << "[*] Deep scan complete. Check output for offsets.\n";
     mach_vm_address_t datamodel = 0;
     mach_vm_address_t workspace = 0;
     uint32_t instance_name_offset = 0;
