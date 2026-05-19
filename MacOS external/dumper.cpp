@@ -279,47 +279,32 @@ int main() {
         }
     }
     if (datamodel == 0 && workspace != 0) {
-        std::cout << "[*] We found Workspace (0x" << std::hex << workspace << "). Using reverse-graph to find DataModel...\n";
+        std::cout << "[*] We found Workspace (0x" << std::hex << workspace << ") and Stats (0x" << stats_obj << ").\n";
+        std::cout << "[*] Since both are Instances inside DataModel, their Parent pointer MUST be at the exact same offset!\n";
+        std::cout << "[*] Scanning for shared pointers...\n";
         
-        // Scan Workspace for any pointer that could be Parent
-        for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
-            mach_vm_address_t parent_cand = read_ptr(task, workspace + p_off);
-            if (parent_cand > 0x100000000 && parent_cand < 0x7FFFFFFFFFFF) {
-                
-                // If this is DataModel, it MUST have a children vector that contains Workspace!
-                for (uint32_t v_off = 0x10; v_off <= 0x300; v_off += 8) {
-                    mach_vm_address_t begin = read_ptr(task, parent_cand + v_off);
-                    mach_vm_address_t end = read_ptr(task, parent_cand + v_off + 8);
-                    mach_vm_address_t cap = read_ptr(task, parent_cand + v_off + 16);
+        for (uint32_t offset = 0x10; offset <= 0x300; offset += 8) {
+            mach_vm_address_t stats_ptr = read_ptr(task, stats_obj + offset);
+            mach_vm_address_t works_ptr = read_ptr(task, workspace + offset);
+            
+            if (stats_ptr > 0x100000000 && stats_ptr < 0x7FFFFFFFFFFF && stats_ptr == works_ptr) {
+                if (stats_ptr != stats_obj && stats_ptr != workspace) {
+                    std::cout << "  [+] BINGO! Exact shared pointer match at offset 0x" << std::hex << offset << "\n";
+                    std::cout << "      -> Shared Address: 0x" << stats_ptr << "\n";
                     
-                    if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                    // Verify if this candidate has a Children vector
+                    for (uint32_t v_off = 0x10; v_off <= 0x300; v_off += 8) {
+                        mach_vm_address_t begin = read_ptr(task, stats_ptr + v_off);
+                        mach_vm_address_t end = read_ptr(task, stats_ptr + v_off + 8);
+                        mach_vm_address_t cap = read_ptr(task, stats_ptr + v_off + 16);
                         
-                        // Check as 16-byte shared_ptr vector
-                        uint64_t count_16 = (end - begin) / 16;
-                        bool found = false;
-                        
-                        if (count_16 > 5 && count_16 < 200) {
-                            for (uint64_t i = 0; i < count_16; i++) {
-                                mach_vm_address_t child = read_ptr(task, begin + (i * 16));
-                                if (child == workspace) { found = true; break; }
+                        if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                            uint64_t count = (end - begin) / 16;
+                            if (count > 5 && count < 200) {
+                                std::cout << "      [!] Verified! Candidate has a valid vector at 0x" << v_off << " (Count: " << std::dec << count << ")\n";
+                                datamodel = stats_ptr;
+                                break;
                             }
-                        }
-                        
-                        // Check as 8-byte raw pointer vector
-                        uint64_t count_8 = (end - begin) / 8;
-                        if (!found && count_8 > 5 && count_8 < 200) {
-                            for (uint64_t i = 0; i < count_8; i++) {
-                                mach_vm_address_t child = read_ptr(task, begin + (i * 8));
-                                if (child == workspace) { found = true; break; }
-                            }
-                        }
-                        
-                        if (found) {
-                            std::cout << "  [+] BINGO! Reverse-graph confirmed DataModel.\n";
-                            std::cout << "      -> DataModel: 0x" << std::hex << parent_cand << " (Workspace + 0x" << p_off << ")\n";
-                            std::cout << "      -> Children Vector Offset: 0x" << v_off << "\n";
-                            datamodel = parent_cand;
-                            break;
                         }
                     }
                 }
