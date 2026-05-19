@@ -56,4 +56,4 @@ jobs:
             MacOS/executor.dylib \
             MacOS/send.sh \
             "MacOS external/dumper" \
-            "MacOS external/start.sh"
+            "MacOS external/install.sh"
