@@ -212,51 +212,105 @@ int main() {
     std::cout << "[+] WaitingHybridScriptsJob: 0x" << std::hex << whs_job << "\n";
     std::cout << "[+] RenderJob: 0x" << std::hex << render_job << "\n";
 
-    // 3. Dynamic Instance Offset Resolver via Stats -> Workspace
+    // 3. Dynamic Instance Offset Resolver via Jobs Pointer Chains
     mach_vm_address_t datamodel = 0;
+    mach_vm_address_t script_context = 0;
     mach_vm_address_t workspace = 0;
-    mach_vm_address_t stats_obj = 0;
     uint32_t offset_name = 0;
     uint32_t offset_children = 0;
     uint32_t offset_parent = 0;
     uint32_t offset_class_desc = 0;
     uint32_t offset_class_name = 0;
 
-    std::cout << "[*] Scanning all jobs dynamically for Stats object...\n";
-    for (uint64_t i = 0; i < job_count; i++) {
-        mach_vm_address_t job = read_ptr(task, jobs_begin + (i * job_size));
-        for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
-            mach_vm_address_t ptr = read_ptr(task, job + j_off);
+    if (whs_job) {
+        std::cout << "[*] Following WaitingHybridScriptsJob pointer chain to DataModel...\n";
+        for (uint32_t j_off = 0x130; j_off <= 0x1A0; j_off += 8) {
+            mach_vm_address_t ptr = read_ptr(task, whs_job + j_off);
             if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
-                for (uint32_t str_off = 0x10; str_off <= 0x80; str_off += 8) {
-                    std::string s = read_string(task, ptr + str_off);
-                    if (s == "(In - Out) KBps:" || s == "Instance count:") {
-                        stats_obj = ptr;
-                        std::cout << "[+] Found Stats object at Job + 0x" << std::hex << j_off << "\n";
+                for (uint32_t s_off = 0x10; s_off <= 0x60; s_off += 8) {
+                    if (read_string(task, ptr + s_off) == "ScriptContext") {
+                        script_context = ptr;
+                        offset_name = s_off;
+                        std::cout << "  [+] Found ScriptContext at 0x" << std::hex << script_context << " (Name offset: 0x" << offset_name << ")\n";
                         break;
                     }
                 }
             }
-            if (stats_obj) break;
+            if (script_context) break;
         }
-        if (stats_obj) break;
     }
 
-    if (stats_obj) {
-        std::cout << "[*] Scanning Stats object for Workspace...\n";
-        for (uint32_t p_off = 0x8; p_off <= 0x500; p_off += 8) {
-            mach_vm_address_t cand = read_ptr(task, stats_obj + p_off);
-            if (cand > 0x100000000 && cand < 0x7FFFFFFFFFFF) {
-                for (uint32_t s_off = 0x10; s_off <= 0xA0; s_off += 8) {
-                    if (read_string(task, cand + s_off) == "Workspace") {
-                        workspace = cand;
-                        offset_name = s_off;
-                        std::cout << "  [+] Found Workspace at 0x" << std::hex << workspace << " (Name offset: 0x" << offset_name << ")\n";
+    if (script_context) {
+        for (uint32_t p_off = 0x10; p_off <= 0x80; p_off += 8) {
+            mach_vm_address_t ptr = read_ptr(task, script_context + p_off);
+            if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
+                std::string s = read_string(task, ptr + offset_name);
+                if (s == "Game" || s == "App" || s == "UGCGame") {
+                    datamodel = ptr;
+                    offset_parent = p_off;
+                    std::cout << "  [+] Found DataModel at 0x" << std::hex << datamodel << " (Parent offset: 0x" << offset_parent << ")\n";
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (!datamodel && render_job) {
+        std::cout << "[*] Fallback: Scanning RenderJob for DataModel...\n";
+        for (uint32_t j_off = 0x200; j_off <= 0x250; j_off += 8) {
+            mach_vm_address_t render_view = read_ptr(task, render_job + j_off);
+            if (render_view > 0x100000000 && render_view < 0x7FFFFFFFFFFF) {
+                for (uint32_t p_off = 0x10; p_off <= 0x40; p_off += 8) {
+                    mach_vm_address_t ptr = read_ptr(task, render_view + p_off);
+                    if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
+                        for (uint32_t s_off = 0x10; s_off <= 0x60; s_off += 8) {
+                            std::string s = read_string(task, ptr + s_off);
+                            if (s == "Game" || s == "App") {
+                                datamodel = ptr;
+                                offset_name = s_off;
+                                offset_parent = p_off;
+                                std::cout << "  [+] Found DataModel via RenderJob at 0x" << std::hex << datamodel << "\n";
+                                break;
+                            }
+                        }
+                    }
+                    if (datamodel) break;
+                }
+            }
+            if (datamodel) break;
+        }
+    }
+
+    if (datamodel) {
+        std::cout << "[*] Resolving Children and Workspace from DataModel...\n";
+        for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
+            mach_vm_address_t begin = read_ptr(task, datamodel + v_off);
+            mach_vm_address_t end = read_ptr(task, datamodel + v_off + 8);
+            mach_vm_address_t cap = read_ptr(task, datamodel + v_off + 16);
+            if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                uint64_t count = (end - begin) / 16;
+                if (count >= 10 && count <= 150) {
+                    int matches = 0;
+                    mach_vm_address_t temp_ws = 0;
+                    for (uint64_t c = 0; c < std::min<uint64_t>(30, count); c++) {
+                        mach_vm_address_t child = read_ptr(task, begin + (c * 16));
+                        if (child) {
+                            std::string s = read_string(task, child + offset_name);
+                            if (s == "Workspace" || s == "Players" || s == "Lighting") {
+                                matches++;
+                                if (s == "Workspace") temp_ws = child;
+                            }
+                        }
+                    }
+                    if (matches >= 2) {
+                        offset_children = v_off;
+                        workspace = temp_ws;
+                        std::cout << "  [+] Resolved Children offset: 0x" << std::hex << offset_children << "\n";
+                        if (workspace) std::cout << "  [+] Extracted Workspace: 0x" << std::hex << workspace << "\n";
                         break;
                     }
                 }
             }
-            if (workspace) break;
         }
     }
 
@@ -275,48 +329,6 @@ int main() {
                 }
             }
             if (offset_class_desc) break;
-        }
-
-        // Resolve Children
-        for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
-            mach_vm_address_t begin = read_ptr(task, workspace + v_off);
-            mach_vm_address_t end = read_ptr(task, workspace + v_off + 8);
-            mach_vm_address_t cap = read_ptr(task, workspace + v_off + 16);
-            if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
-                uint64_t count = (end - begin) / 16;
-                if (count >= 2 && count < 20000) {
-                    int matches = 0;
-                    for (uint64_t i = 0; i < std::min<uint64_t>(20, count); i++) {
-                        mach_vm_address_t child = read_ptr(task, begin + (i * 16));
-                        if (child) {
-                            std::string cname = read_string(task, child + offset_name);
-                            if (cname == "Terrain" || cname == "Camera") matches++;
-                        }
-                    }
-                    if (matches >= 1) {
-                        offset_children = v_off;
-                        std::cout << "  [+] Resolved Children offset: 0x" << std::hex << offset_children << "\n";
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Resolve Parent
-        if (offset_children) {
-            mach_vm_address_t begin = read_ptr(task, workspace + offset_children);
-            mach_vm_address_t child = read_ptr(task, begin); // Usually Camera or Terrain
-            if (child) {
-                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
-                    if (read_ptr(task, child + p_off) == workspace) {
-                        offset_parent = p_off;
-                        datamodel = read_ptr(task, workspace + offset_parent);
-                        std::cout << "  [+] Resolved Parent offset: 0x" << std::hex << offset_parent << "\n";
-                        std::cout << "  [+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
-                        break;
-                    }
-                }
-            }
         }
     }
 
