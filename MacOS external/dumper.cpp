@@ -279,43 +279,52 @@ int main() {
         }
     }
     if (datamodel == 0 && workspace != 0) {
-        std::cout << "[*] We found Workspace but not DataModel. Scanning Workspace for Parent structurally...\n";
+        std::cout << "[*] We found Workspace (0x" << std::hex << workspace << "). Using reverse-graph to find DataModel...\n";
+        
+        // Scan Workspace for any pointer that could be Parent
         for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
             mach_vm_address_t parent_cand = read_ptr(task, workspace + p_off);
             if (parent_cand > 0x100000000 && parent_cand < 0x7FFFFFFFFFFF) {
-                // Check if this parent candidate has a children vector
-                for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
+                
+                // If this is DataModel, it MUST have a children vector that contains Workspace!
+                for (uint32_t v_off = 0x10; v_off <= 0x300; v_off += 8) {
                     mach_vm_address_t begin = read_ptr(task, parent_cand + v_off);
                     mach_vm_address_t end = read_ptr(task, parent_cand + v_off + 8);
                     mach_vm_address_t cap = read_ptr(task, parent_cand + v_off + 16);
                     
                     if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
-                        uint64_t count = (end - begin) / 16; // std::shared_ptr vector
-                        if (count > 20 && count < 150) {
-                            std::cout << "  [+] Structural Match! Parent cand at Workspace + 0x" << std::hex << p_off << " -> 0x" << parent_cand << "\n";
-                            std::cout << "      -> Vector offset: 0x" << v_off << " | Child count: " << std::dec << count << "\n";
-                            datamodel = parent_cand;
-                            
-                            std::cout << "      [*] Dumping first 10 children strings...\n";
-                            for (uint64_t i = 0; i < std::min<uint64_t>(10, count); i++) {
+                        
+                        // Check as 16-byte shared_ptr vector
+                        uint64_t count_16 = (end - begin) / 16;
+                        bool found = false;
+                        
+                        if (count_16 > 5 && count_16 < 200) {
+                            for (uint64_t i = 0; i < count_16; i++) {
                                 mach_vm_address_t child = read_ptr(task, begin + (i * 16));
-                                if (child > 0x100000000) {
-                                    for (uint32_t str_off = 0x10; str_off <= 0x80; str_off += 8) {
-                                        std::string name = read_string(task, child + str_off);
-                                        if (name.length() >= 3 && name.length() < 25) {
-                                            bool printable = true;
-                                            for (char c : name) { if (c < 32 || c > 126) printable = false; }
-                                            if (printable && (name == "Players" || name == "Lighting" || name == "ReplicatedStorage" || name == "CoreGui")) {
-                                                std::cout << "          -> Found '" << name << "' at child + 0x" << std::hex << str_off << " (child: 0x" << child << ")\n";
-                                            }
-                                        }
-                                    }
-                                }
+                                if (child == workspace) { found = true; break; }
                             }
+                        }
+                        
+                        // Check as 8-byte raw pointer vector
+                        uint64_t count_8 = (end - begin) / 8;
+                        if (!found && count_8 > 5 && count_8 < 200) {
+                            for (uint64_t i = 0; i < count_8; i++) {
+                                mach_vm_address_t child = read_ptr(task, begin + (i * 8));
+                                if (child == workspace) { found = true; break; }
+                            }
+                        }
+                        
+                        if (found) {
+                            std::cout << "  [+] BINGO! Reverse-graph confirmed DataModel.\n";
+                            std::cout << "      -> DataModel: 0x" << std::hex << parent_cand << " (Workspace + 0x" << p_off << ")\n";
+                            std::cout << "      -> Children Vector Offset: 0x" << v_off << "\n";
+                            datamodel = parent_cand;
+                            break;
                         }
                     }
                 }
             }
+            if (datamodel) break;
         }
     }
 
