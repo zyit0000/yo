@@ -193,71 +193,55 @@ int main() {
     uint64_t job_count = (jobs_end - jobs_begin) / job_size;
     std::cout << "[+] Found " << std::dec << job_count << " jobs (element size: " << job_size << " bytes).\n";
 
-    // 2. Iterate Jobs to aggressively find DataModel and Workspace
-    mach_vm_address_t datamodel = 0;
-    mach_vm_address_t workspace = 0;
-    uint32_t instance_name_offset = 0;
+    // 2. Locate WaitingHybridScriptsJob and analyze its pointers
+    mach_vm_address_t whs_job = 0;
 
-    std::cout << "[*] Scanning all jobs (2-levels deep) for DataModel / Workspace...\n";
     for (uint64_t i = 0; i < job_count; i++) {
         mach_vm_address_t job_ptr_addr = jobs_begin + (i * job_size);
         mach_vm_address_t job = read_ptr(task, job_ptr_addr);
         
-        for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
-            mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
-            if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
-                // Check Level 1
-                for (uint32_t name_off = 0x28; name_off <= 0x68; name_off += 8) {
-                    std::string name = read_string(task, ptr1 + name_off);
-                    if (name == "Game" || name == "Workspace") {
-                        if (name == "Game") datamodel = ptr1;
-                        if (name == "Workspace") workspace = ptr1;
-                        instance_name_offset = name_off;
-                        std::cout << "[+] Found " << name << " at Job + 0x" << std::hex << j_off << " (Name off: 0x" << name_off << ")\n";
-                        break;
-                    }
-                }
-
-                if (!datamodel && !workspace) {
-                    // Check Level 2
-                    for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
-                        mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
-                        if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
-                            for (uint32_t name_off = 0x28; name_off <= 0x68; name_off += 8) {
-                                std::string name = read_string(task, ptr2 + name_off);
-                                if (name == "Game" || name == "Workspace") {
-                                    if (name == "Game") datamodel = ptr2;
-                                    if (name == "Workspace") workspace = ptr2;
-                                    instance_name_offset = name_off;
-                                    std::cout << "[+] Found " << name << " at Job + 0x" << std::hex << j_off << " -> 0x" << p_off << " (Name off: 0x" << name_off << ")\n";
-                                    break;
-                                }
-                            }
-                        }
-                        if (datamodel || workspace) break;
-                    }
-                }
+        for (uint32_t offset = 0x10; offset <= 0x100; offset += 8) {
+            std::string s = read_string(task, job + offset);
+            if (s == "WaitingHybridScriptsJob") {
+                whs_job = job;
+                std::cout << "[+] Found WaitingHybridScriptsJob at 0x" << std::hex << job << " (Name offset: 0x" << offset << ")\n";
+                break;
             }
-            if (datamodel || workspace) break;
         }
-        if (datamodel || workspace) break;
+        if (whs_job) break; // Found it
     }
 
-    if (datamodel == 0 && workspace != 0) {
-        std::cout << "[*] Found Workspace but not DataModel. Finding DataModel via Workspace's Parent...\n";
-        // Scan for Parent offset in Workspace
-        for (uint32_t p_off = 0x30; p_off <= 0x80; p_off += 8) {
-            mach_vm_address_t parent = read_ptr(task, workspace + p_off);
-            if (parent > 0x100000000 && parent < 0x7FFFFFFFFFFF) {
-                std::string p_name = read_string(task, parent + instance_name_offset);
-                if (p_name == "Game" || p_name == "Ugc") {
-                    datamodel = parent;
-                    std::cout << "[+] Found DataModel via Parent at offset: 0x" << std::hex << p_off << "\n";
-                    break;
+    if (whs_job == 0) {
+        std::cout << "[-] Could not find WaitingHybridScriptsJob.\n";
+        return 1;
+    }
+
+    std::cout << "[*] Dumping pointers inside WaitingHybridScriptsJob (0x10 to 0x200)...\n";
+    for (uint32_t j_off = 0x10; j_off <= 0x200; j_off += 8) {
+        mach_vm_address_t ptr = read_ptr(task, whs_job + j_off);
+        if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
+            std::cout << "  -> Pointer at offset 0x" << std::hex << j_off << " : 0x" << ptr << "\n";
+            
+            // Scan this pointer for any std::strings (0x10 to 0xA0)
+            for (uint32_t str_off = 0x10; str_off <= 0xA0; str_off += 8) {
+                std::string s = read_string(task, ptr + str_off);
+                if (s.length() >= 3 && s.length() < 50) {
+                    // Filter out garbage text somewhat
+                    bool printable = true;
+                    for (char c : s) { if (c < 32 || c > 126) { printable = false; break; } }
+                    if (printable) {
+                        std::cout << "       [String @ 0x" << std::hex << str_off << "]: " << s << "\n";
+                    }
                 }
             }
         }
     }
+
+    std::cout << "[*] Dumping complete. Please check the output for 'Game', 'Workspace', or 'ScriptContext'.\n";
+
+    mach_vm_address_t datamodel = 0;
+    mach_vm_address_t workspace = 0;
+    uint32_t instance_name_offset = 0;
 
     if (datamodel != 0) {
         std::cout << "[+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
