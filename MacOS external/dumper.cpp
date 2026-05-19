@@ -212,11 +212,6 @@ int main() {
     std::cout << "[+] WaitingHybridScriptsJob: 0x" << std::hex << whs_job << "\n";
     std::cout << "[+] RenderJob: 0x" << std::hex << render_job << "\n";
 
-    // 3. Dynamic Stats -> DataModel Target Dumper
-    mach_vm_address_t datamodel = 0;
-    mach_vm_address_t workspace = 0;
-    uint32_t instance_name_offset = 0;
-    
     // 3. Absolute Brute-Force DataModel & Permanent Offset Resolver
     mach_vm_address_t datamodel = 0;
     uint32_t offset_children = 0;
@@ -318,7 +313,7 @@ int main() {
     std::cout << "\n========================================\n";
     std::cout << "        PERMANENT OFFSETS DUMPED        \n";
     std::cout << "========================================\n";
-    std::cout << "#define OFFSET_TASK_SCHEDULER_JOBS 0x" << std::hex << job_vector_offset << "\n";
+    std::cout << "#define OFFSET_TASK_SCHEDULER_JOBS 0x" << std::hex << jobs_offset << "\n";
     if (offset_name) std::cout << "#define OFFSET_INSTANCE_NAME 0x" << std::hex << offset_name << "\n";
     if (offset_children) std::cout << "#define OFFSET_INSTANCE_CHILDREN 0x" << std::hex << offset_children << "\n";
     if (offset_localplayer) std::cout << "#define OFFSET_PLAYERS_LOCALPLAYER 0x" << std::hex << offset_localplayer << "\n";
