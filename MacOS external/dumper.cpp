@@ -278,38 +278,44 @@ int main() {
             }
         }
     }
-
     if (datamodel == 0 && workspace != 0) {
-        std::cout << "[*] We found Workspace but not DataModel. Scanning Workspace for Parent...\n";
-        for (uint32_t p_off = 0x10; p_off <= 0x150; p_off += 8) {
+        std::cout << "[*] We found Workspace but not DataModel. Scanning Workspace for Parent structurally...\n";
+        for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
             mach_vm_address_t parent_cand = read_ptr(task, workspace + p_off);
             if (parent_cand > 0x100000000 && parent_cand < 0x7FFFFFFFFFFF) {
-                for (uint32_t s_off = 0x0; s_off <= 0x200; s_off += 8) {
-                    std::string s = read_string(task, parent_cand + s_off);
-                    if (s == "DataModel" || s == "Game" || s == "UGCGame") {
-                        std::cout << "  [+] Found '" << s << "' inline at parent + 0x" << std::hex << s_off << " (parent = Workspace + 0x" << p_off << " -> 0x" << parent_cand << ")\n";
-                        datamodel = parent_cand;
-                        break;
-                    }
-                }
-                
-                for (uint32_t c_off = 0x0; c_off <= 0x100; c_off += 8) {
-                    mach_vm_address_t desc = read_ptr(task, parent_cand + c_off);
-                    if (desc > 0x100000000 && desc < 0x7FFFFFFFFFFF) {
-                        for (uint32_t s_off = 0x0; s_off <= 0x100; s_off += 8) {
-                            std::string s = read_string(task, desc + s_off);
-                            if (s == "DataModel" || s == "Game" || s == "UGCGame") {
-                                std::cout << "  [+] Found ClassName '" << s << "' via desc at parent + 0x" << std::hex << c_off << "\n";
-                                std::cout << "      -> parent = Workspace + 0x" << p_off << " -> 0x" << parent_cand << "\n";
-                                datamodel = parent_cand;
-                                break;
+                // Check if this parent candidate has a children vector
+                for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
+                    mach_vm_address_t begin = read_ptr(task, parent_cand + v_off);
+                    mach_vm_address_t end = read_ptr(task, parent_cand + v_off + 8);
+                    mach_vm_address_t cap = read_ptr(task, parent_cand + v_off + 16);
+                    
+                    if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                        uint64_t count = (end - begin) / 16; // std::shared_ptr vector
+                        if (count > 20 && count < 150) {
+                            std::cout << "  [+] Structural Match! Parent cand at Workspace + 0x" << std::hex << p_off << " -> 0x" << parent_cand << "\n";
+                            std::cout << "      -> Vector offset: 0x" << v_off << " | Child count: " << std::dec << count << "\n";
+                            datamodel = parent_cand;
+                            
+                            std::cout << "      [*] Dumping first 10 children strings...\n";
+                            for (uint64_t i = 0; i < std::min<uint64_t>(10, count); i++) {
+                                mach_vm_address_t child = read_ptr(task, begin + (i * 16));
+                                if (child > 0x100000000) {
+                                    for (uint32_t str_off = 0x10; str_off <= 0x80; str_off += 8) {
+                                        std::string name = read_string(task, child + str_off);
+                                        if (name.length() >= 3 && name.length() < 25) {
+                                            bool printable = true;
+                                            for (char c : name) { if (c < 32 || c > 126) printable = false; }
+                                            if (printable && (name == "Players" || name == "Lighting" || name == "ReplicatedStorage" || name == "CoreGui")) {
+                                                std::cout << "          -> Found '" << name << "' at child + 0x" << std::hex << str_off << " (child: 0x" << child << ")\n";
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                    if (datamodel) break;
                 }
             }
-            if (datamodel) break;
         }
     }
 
