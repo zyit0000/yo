@@ -217,101 +217,112 @@ int main() {
     mach_vm_address_t workspace = 0;
     uint32_t instance_name_offset = 0;
     
-    mach_vm_address_t stats_obj = 0;
-    std::cout << "[*] Scanning all jobs dynamically for Stats object...\n";
+    // 3. Absolute Brute-Force DataModel & Permanent Offset Resolver
+    mach_vm_address_t datamodel = 0;
+    uint32_t offset_children = 0;
+    uint32_t offset_name = 0;
+    mach_vm_address_t players_svc = 0;
+    
+    std::cout << "[*] Commencing deep-scan heuristics for DataModel via Children vector...\n";
     for (uint64_t i = 0; i < job_count; i++) {
-        mach_vm_address_t job_ptr_addr = jobs_begin + (i * job_size);
-        mach_vm_address_t job = read_ptr(task, job_ptr_addr);
+        mach_vm_address_t job = read_ptr(task, jobs_begin + (i * job_size));
         
-        for (uint32_t j_off = 0x10; j_off <= 0x200; j_off += 8) {
-            mach_vm_address_t ptr = read_ptr(task, job + j_off);
-            if (ptr > 0x100000000 && ptr < 0x7FFFFFFFFFFF) {
-                for (uint32_t str_off = 0x10; str_off <= 0x80; str_off += 8) {
-                    std::string s = read_string(task, ptr + str_off);
-                    if (s == "(In - Out) KBps:" || s == "Instance count:") {
-                        stats_obj = ptr;
-                        std::cout << "[+] Found Stats object at Job + 0x" << std::hex << j_off << " -> 0x" << stats_obj << "\n";
+        for (uint32_t j_off = 0x10; j_off <= 0x300; j_off += 8) {
+            mach_vm_address_t ptr1 = read_ptr(task, job + j_off);
+            if (ptr1 > 0x100000000 && ptr1 < 0x7FFFFFFFFFFF) {
+                
+                // Scan ptr1 directly
+                mach_vm_address_t cands[2] = { ptr1, 0 };
+                for (uint32_t p_off = 0x10; p_off <= 0x100; p_off += 8) {
+                    mach_vm_address_t ptr2 = read_ptr(task, ptr1 + p_off);
+                    if (ptr2 > 0x100000000 && ptr2 < 0x7FFFFFFFFFFF) {
+                        cands[1] = ptr2;
+                        
+                        for (int k = 0; k < 2; k++) {
+                            mach_vm_address_t cand = cands[k];
+                            
+                            for (uint32_t v_off = 0x10; v_off <= 0x200; v_off += 8) {
+                                mach_vm_address_t begin = read_ptr(task, cand + v_off);
+                                mach_vm_address_t end = read_ptr(task, cand + v_off + 8);
+                                mach_vm_address_t cap = read_ptr(task, cand + v_off + 16);
+                                
+                                if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
+                                    uint64_t count = (end - begin) / 16;
+                                    if (count >= 30 && count <= 150) {
+                                        
+                                        int service_matches = 0;
+                                        uint32_t found_name_off = 0;
+                                        
+                                        for (uint64_t c = 0; c < std::min<uint64_t>(30, count); c++) {
+                                            mach_vm_address_t child = read_ptr(task, begin + (c * 16));
+                                            if (child > 0x100000000) {
+                                                for (uint32_t s_off = 0x10; s_off <= 0xA0; s_off += 8) {
+                                                    std::string s = read_string(task, child + s_off);
+                                                    if (s == "Workspace" || s == "Players" || s == "Lighting" || s == "ReplicatedStorage" || s == "CoreGui") {
+                                                        service_matches++;
+                                                        found_name_off = s_off;
+                                                        if (s == "Players") players_svc = child;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (service_matches >= 3) {
+                                            datamodel = cand;
+                                            offset_children = v_off;
+                                            offset_name = found_name_off;
+                                            std::cout << "  [+] BINGO! DataModel Confirmed: 0x" << std::hex << datamodel << "\n";
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (datamodel) break;
+                        }
+                        if (datamodel) break;
+                    }
+                }
+                if (datamodel) break;
+            }
+            if (datamodel) break;
+        }
+        if (datamodel) break;
+    }
+    
+    uint32_t offset_localplayer = 0;
+    mach_vm_address_t localplayer = 0;
+    
+    if (players_svc) {
+        std::cout << "[*] Scanning Players service (0x" << std::hex << players_svc << ") for LocalPlayer...\n";
+        for (uint32_t lp_off = 0x10; lp_off <= 0x200; lp_off += 8) {
+            mach_vm_address_t lp_cand = read_ptr(task, players_svc + lp_off);
+            if (lp_cand > 0x100000000 && lp_cand < 0x7FFFFFFFFFFF) {
+                // Check if lp_cand is an Instance by reading its name
+                std::string lp_name = read_string(task, lp_cand + offset_name);
+                if (lp_name.length() >= 3 && lp_name.length() <= 20) {
+                    bool printable = true;
+                    for (char c : lp_name) { if (c < 32 || c > 126) printable = false; }
+                    if (printable) {
+                        // Very likely the LocalPlayer
+                        std::cout << "  [+] Found LocalPlayer candidate: '" << lp_name << "' at offset 0x" << std::hex << lp_off << "\n";
+                        offset_localplayer = lp_off;
+                        localplayer = lp_cand;
                         break;
                     }
                 }
             }
-            if (stats_obj) break;
-        }
-        if (stats_obj) break;
-    }
-    
-    if (stats_obj) {
-        std::cout << "[*] Scanning Stats object for Parent (DataModel) candidates...\n";
-        for (uint32_t p_off = 0x8; p_off <= 0x500; p_off += 8) {
-            mach_vm_address_t cand = read_ptr(task, stats_obj + p_off);
-            if (cand > 0x100000000 && cand < 0x7FFFFFFFFFFF) {
-                
-                // Check inline strings - very aggressive range
-                for (uint32_t s_off = 0x0; s_off <= 0x200; s_off += 8) {
-                    std::string s = read_string(task, cand + s_off);
-                    if (s.length() >= 4 && s.length() < 20) {
-                        if (s == "DataModel" || s == "Workspace" || s == "Players" || s == "Game" || s == "CoreGui") {
-                            std::cout << "  [+] Found '" << s << "' inline at cand + 0x" << std::hex << s_off << " (cand = Stats + 0x" << p_off << " -> 0x" << cand << ")\n";
-                            if (s == "DataModel") datamodel = cand;
-                            if (s == "Workspace") workspace = cand;
-                        }
-                    }
-                }
-                
-                // Check ClassDescriptor strings - aggressive range
-                for (uint32_t c_off = 0x0; c_off <= 0x100; c_off += 8) {
-                    mach_vm_address_t desc = read_ptr(task, cand + c_off);
-                    if (desc > 0x100000000 && desc < 0x7FFFFFFFFFFF) {
-                        for (uint32_t s_off = 0x0; s_off <= 0x100; s_off += 8) {
-                            std::string s = read_string(task, desc + s_off);
-                            if (s.length() >= 4 && s.length() < 20) {
-                                if (s == "DataModel" || s == "Workspace" || s == "Players" || s == "Game" || s == "CoreGui") {
-                                    std::cout << "  [+] Found ClassName '" << s << "' via desc at cand + 0x" << std::hex << c_off << ", string at desc + 0x" << s_off << "\n";
-                                    std::cout << "      -> cand = Stats + 0x" << p_off << " -> 0x" << cand << "\n";
-                                    if (s == "DataModel") datamodel = cand;
-                                    if (s == "Workspace") workspace = cand;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
-    if (datamodel == 0 && workspace != 0) {
-        std::cout << "[*] We found Workspace (0x" << std::hex << workspace << ") and Stats (0x" << stats_obj << ").\n";
-        std::cout << "[*] Since both are Instances inside DataModel, their Parent pointer MUST be at the exact same offset!\n";
-        std::cout << "[*] Scanning for shared pointers...\n";
-        
-        for (uint32_t offset = 0x10; offset <= 0x300; offset += 8) {
-            mach_vm_address_t stats_ptr = read_ptr(task, stats_obj + offset);
-            mach_vm_address_t works_ptr = read_ptr(task, workspace + offset);
-            
-            if (stats_ptr > 0x100000000 && stats_ptr < 0x7FFFFFFFFFFF && stats_ptr == works_ptr) {
-                if (stats_ptr != stats_obj && stats_ptr != workspace) {
-                    std::cout << "  [+] BINGO! Exact shared pointer match at offset 0x" << std::hex << offset << "\n";
-                    std::cout << "      -> Shared Address: 0x" << stats_ptr << "\n";
-                    
-                    // Verify if this candidate has a Children vector
-                    for (uint32_t v_off = 0x10; v_off <= 0x300; v_off += 8) {
-                        mach_vm_address_t begin = read_ptr(task, stats_ptr + v_off);
-                        mach_vm_address_t end = read_ptr(task, stats_ptr + v_off + 8);
-                        mach_vm_address_t cap = read_ptr(task, stats_ptr + v_off + 16);
-                        
-                        if (begin > 0x100000000 && begin < 0x7FFFFFFFFFFF && end > begin && cap >= end) {
-                            uint64_t count = (end - begin) / 16;
-                            if (count > 5 && count < 200) {
-                                std::cout << "      [!] Verified! Candidate has a valid vector at 0x" << v_off << " (Count: " << std::dec << count << ")\n";
-                                datamodel = stats_ptr;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (datamodel) break;
-        }
-    }
+
+    std::cout << "\n========================================\n";
+    std::cout << "        PERMANENT OFFSETS DUMPED        \n";
+    std::cout << "========================================\n";
+    std::cout << "#define OFFSET_TASK_SCHEDULER_JOBS 0x" << std::hex << job_vector_offset << "\n";
+    if (offset_name) std::cout << "#define OFFSET_INSTANCE_NAME 0x" << std::hex << offset_name << "\n";
+    if (offset_children) std::cout << "#define OFFSET_INSTANCE_CHILDREN 0x" << std::hex << offset_children << "\n";
+    if (offset_localplayer) std::cout << "#define OFFSET_PLAYERS_LOCALPLAYER 0x" << std::hex << offset_localplayer << "\n";
+    std::cout << "========================================\n\n";
 
     if (datamodel != 0) {
         std::cout << "[+] Extracted DataModel: 0x" << std::hex << datamodel << "\n";
